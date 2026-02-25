@@ -7,7 +7,6 @@
 
 import SwiftUI
 
-// MARK: - Settings View
 
 struct SettingsView: View {
     @EnvironmentObject private var appState: AppState
