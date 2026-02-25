@@ -66,6 +66,7 @@ struct ButtonMappingView: View {
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 12)
+                        .contentShape(Rectangle())
                         .background {
                             RoundedRectangle(cornerRadius: 10)
                                 .fill(viewModel.selectedButton == button
@@ -108,6 +109,7 @@ struct ButtonMappingView: View {
                         }
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
+                        .contentShape(Rectangle())
                         .background {
                             Capsule()
                                 .fill(viewModel.selectedClickType == clickType
@@ -168,6 +170,7 @@ struct ButtonMappingView: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 10)
+            .contentShape(Rectangle())
             .background {
                 RoundedRectangle(cornerRadius: 8)
                     .fill(viewModel.currentAction == action
