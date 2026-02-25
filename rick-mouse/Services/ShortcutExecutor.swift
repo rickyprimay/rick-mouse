@@ -8,10 +8,17 @@
 import Foundation
 import CoreGraphics
 import Carbon.HIToolbox
+import AppKit
+
+// Private Dock API — used by Mac Mouse Fix and similar tools
+// This is the reliable way to trigger system features on macOS
+@_silgen_name("CoreDockSendNotification")
+private func CoreDockSendNotification(_ notification: CFString, _ unknown: Int32)
 
 final class ShortcutExecutor {
 
     func execute(action: MouseAction) {
+        print("[ShortcutExecutor] execute: \(action)")
         switch action {
         case .none:
             break
@@ -51,95 +58,103 @@ final class ShortcutExecutor {
         }
     }
 
+    // MARK: - System Actions via CoreDock Private API
+
     private func triggerMissionControl() {
-        postKeyEvent(keyCode: UInt16(kVK_UpArrow), flags: .maskControl)
+        CoreDockSendNotification("com.apple.expose.awake" as CFString, 0)
+        print("[ShortcutExecutor] CoreDock: Mission Control")
     }
 
     private func triggerAppExpose() {
-        postKeyEvent(keyCode: UInt16(kVK_DownArrow), flags: .maskControl)
+        CoreDockSendNotification("com.apple.expose.front.awake" as CFString, 0)
+        print("[ShortcutExecutor] CoreDock: App Exposé")
     }
 
     private func triggerLaunchpad() {
-        if let source = CGEventSource(stateID: .hidSystemState) {
-            let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0xA0, keyDown: true)
-            let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0xA0, keyDown: false)
-            keyDown?.post(tap: .cghidEventTap)
-            keyUp?.post(tap: .cghidEventTap)
-        }
+        CoreDockSendNotification("com.apple.launchpad.toggle" as CFString, 0)
+        print("[ShortcutExecutor] CoreDock: Launchpad")
     }
 
     private func triggerShowDesktop() {
-        postKeyEvent(keyCode: UInt16(kVK_F3), flags: .maskCommand)
+        CoreDockSendNotification("com.apple.showdesktop.awake" as CFString, 0)
+        print("[ShortcutExecutor] CoreDock: Show Desktop")
     }
+
+    // MARK: - Actions via CGEvent
 
     private func triggerSmartZoom() {
-        if let source = CGEventSource(stateID: .hidSystemState) {
-            let event = CGEvent(
-                scrollWheelEvent2Source: source,
-                units: .pixel,
-                wheelCount: 1,
-                wheel1: 0,
-                wheel2: 0,
-                wheel3: 0
-            )
-            event?.flags = .maskControl
-            event?.post(tap: .cghidEventTap)
-        }
+        let event = CGEvent(
+            scrollWheelEvent2Source: nil,
+            units: .pixel,
+            wheelCount: 1,
+            wheel1: 0,
+            wheel2: 0,
+            wheel3: 0
+        )
+        event?.flags = .maskControl
+        event?.post(tap: .cgSessionEventTap)
+        print("[ShortcutExecutor] SmartZoom posted")
     }
 
-    private func triggerNavigateBack() {
-        postKeyEvent(keyCode: UInt16(kVK_ANSI_LeftBracket), flags: .maskCommand)
-    }
-
-    private func triggerNavigateForward() {
-        postKeyEvent(keyCode: UInt16(kVK_ANSI_RightBracket), flags: .maskCommand)
-    }
 
     private func triggerMiddleClick() {
-        guard let source = CGEventSource(stateID: .hidSystemState) else { return }
         let pos = CGEvent(source: nil)?.location ?? .zero
 
         let down = CGEvent(
-            mouseEventSource: source,
+            mouseEventSource: nil,
             mouseType: .otherMouseDown,
             mouseCursorPosition: pos,
             mouseButton: .center
         )
         let up = CGEvent(
-            mouseEventSource: source,
+            mouseEventSource: nil,
             mouseType: .otherMouseUp,
             mouseCursorPosition: pos,
             mouseButton: .center
         )
 
-        down?.post(tap: .cghidEventTap)
-        up?.post(tap: .cghidEventTap)
+        down?.post(tap: .cgSessionEventTap)
+        usleep(5_000)
+        up?.post(tap: .cgSessionEventTap)
+        print("[ShortcutExecutor] MiddleClick posted")
     }
 
     private func triggerSwitchDesktop(direction: GestureDirection) {
-        let keyCode: UInt16 = direction == .left
-            ? UInt16(kVK_LeftArrow)
-            : UInt16(kVK_RightArrow)
-        postKeyEvent(keyCode: keyCode, flags: .maskControl)
+        let keyCode = direction == .left ? 123 : 124 // kVK_LeftArrow / kVK_RightArrow
+        runOsascript("tell application \"System Events\" to key code \(keyCode) using control down")
+    }
+
+    private func triggerNavigateBack() {
+        runOsascript("tell application \"System Events\" to key code 33 using command down")
+    }
+
+    private func triggerNavigateForward() {
+        runOsascript("tell application \"System Events\" to key code 30 using command down")
     }
 
     private func triggerKeyboardShortcut(_ shortcut: KeyShortcut) {
-        postKeyEvent(
-            keyCode: UInt16(shortcut.keyCode),
-            flags: shortcut.modifiers.cgEventFlags
-        )
+        var modParts: [String] = []
+        if shortcut.modifiers.command { modParts.append("command down") }
+        if shortcut.modifiers.option { modParts.append("option down") }
+        if shortcut.modifiers.control { modParts.append("control down") }
+        if shortcut.modifiers.shift { modParts.append("shift down") }
+        let modString = modParts.isEmpty ? "" : " using {\(modParts.joined(separator: ", "))}"
+        runOsascript("tell application \"System Events\" to key code \(shortcut.keyCode)\(modString)")
     }
 
-    private func postKeyEvent(keyCode: UInt16, flags: CGEventFlags) {
-        guard let source = CGEventSource(stateID: .hidSystemState) else { return }
+    // MARK: - osascript subprocess (runs as separate process with system-level permissions)
 
-        let keyDown = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true)
-        let keyUp = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false)
-
-        keyDown?.flags = flags
-        keyUp?.flags = flags
-
-        keyDown?.post(tap: .cghidEventTap)
-        keyUp?.post(tap: .cghidEventTap)
+    private func runOsascript(_ script: String) {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        task.arguments = ["-e", script]
+        task.standardOutput = FileHandle.nullDevice
+        task.standardError = FileHandle.nullDevice
+        do {
+            try task.run()
+            print("[ShortcutExecutor] osascript: \(script)")
+        } catch {
+            print("[ShortcutExecutor] osascript error: \(error)")
+        }
     }
 }
