@@ -19,7 +19,7 @@ final class ScrollEngine {
     private var lastTimestamp: TimeInterval = 0
 
     private var currentSmoothness: ScrollSmoothness = .regular
-    private var currentInertia: Double = 0.7
+        private var currentInertia: Double = 0.7
     private var currentSpeed: Double = 1.0
     private var invertDirection: Bool = false
     private var precisionScrollEnabled: Bool = true
@@ -68,6 +68,32 @@ final class ScrollEngine {
         case .high:
             addMomentum(deltaY: adjustedDeltaY, deltaX: adjustedDeltaX)
             return createSmoothScrollEvent(deltaY: adjustedDeltaY, deltaX: adjustedDeltaX)
+        }
+    }
+
+    /// Modifies the given scroll event in-place based on settings.
+    /// This avoids creating new CGEvent objects which cause issues with CGEventTap.
+    func applyScrollSettings(event: CGEvent, settings: ScrollSettings) {
+        updateSettings(settings)
+
+        let deltaY = event.scrollFixedDeltaY
+        let deltaX = event.scrollFixedDeltaX
+
+        let directionMultiplier: Double = invertDirection ? -1.0 : 1.0
+        let precisionMultiplier: Double = (precisionScrollEnabled && event.hasShift)
+            ? AppConstants.scrollPrecisionMultiplier
+            : 1.0
+
+        let adjustedDeltaY = deltaY * directionMultiplier * precisionMultiplier * currentSpeed
+        let adjustedDeltaX = deltaX * directionMultiplier * precisionMultiplier * currentSpeed
+
+        // Modify the original event in-place
+        event.setIntegerValueField(.scrollWheelEventDeltaAxis1, value: Int64(adjustedDeltaY.clamped(to: -127...127)))
+        event.setIntegerValueField(.scrollWheelEventDeltaAxis2, value: Int64(adjustedDeltaX.clamped(to: -127...127)))
+
+        // Also apply momentum if high smoothness
+        if currentSmoothness == .high {
+            addMomentum(deltaY: adjustedDeltaY, deltaX: adjustedDeltaX)
         }
     }
 
