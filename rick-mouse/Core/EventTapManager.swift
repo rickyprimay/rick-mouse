@@ -122,11 +122,6 @@ final class EventTapManager {
     }
 
     fileprivate func handleEvent(type: CGEventType, event: CGEvent) -> CGEvent? {
-        if type == .tapDisabledByUserInput || type == .tapDisabledByTimeout {
-            reenable()
-            return event
-        }
-
         return callback?(type, event) ?? event
     }
 }
@@ -141,9 +136,16 @@ private func eventTapCallbackFunction(
 
     let manager = Unmanaged<EventTapManager>.fromOpaque(userInfo).takeUnretainedValue()
 
+    if type == .tapDisabledByUserInput || type == .tapDisabledByTimeout {
+        DispatchQueue.main.async {
+            manager.reenable()
+        }
+        return Unmanaged.passUnretained(event)
+    }
+
     if let modifiedEvent = manager.handleEvent(type: type, event: event) {
         return Unmanaged.passUnretained(modifiedEvent)
     }
 
-    return nil 
+    return nil
 }
