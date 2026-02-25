@@ -19,7 +19,6 @@ final class MouseEventInterceptor: ObservableObject {
     @MainActor @Published private(set) var isActive: Bool = false
     @MainActor @Published var configuration: UserConfiguration {
         didSet {
-            // Update the thread-safe copy
             _threadSafeConfiguration = configuration
         }
     }
@@ -102,6 +101,8 @@ final class MouseEventInterceptor: ObservableObject {
 
         lastOtherMouseDownTime = now
         lastOtherMouseDownButton = buttonNumber
+        isDragging = false
+        isHolding = false
 
         let gestureSettings = _threadSafeConfiguration.gestureSettings
         if gestureSettings.gesturesEnabled,
@@ -118,10 +119,7 @@ final class MouseEventInterceptor: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + AppConstants.holdDetectionDelay, execute: holdItem)
 
         if let button = MouseButton(rawValue: Int(buttonNumber)) {
-            let clickType: ClickType = otherMouseClickCount >= 2 ? .doubleClick : .singleClick
-
-            if let mapping = findMapping(button: button, clickType: clickType),
-               mapping.action != .none {
+            if hasAnyMapping(for: button) {
                 return nil
             }
         }
@@ -146,20 +144,28 @@ final class MouseEventInterceptor: ObservableObject {
         }
 
         if let button = MouseButton(rawValue: Int(buttonNumber)) {
-            let clickType: ClickType
-            if isHolding {
-                clickType = .clickAndHold
-            } else if isDragging {
+            var clickType: ClickType = .singleClick
+            
+            if isDragging {
                 clickType = .clickAndDrag
+            } else if isHolding {
+                clickType = .clickAndHold
             } else if otherMouseClickCount >= 2 {
                 clickType = .doubleClick
-            } else {
-                clickType = .singleClick
             }
 
-            if let mapping = findMapping(button: button, clickType: clickType),
-               mapping.action != .none {
+            if let mapping = findMapping(button: button, clickType: clickType), mapping.action != .none {
                 shortcutExecutor.execute(action: mapping.action)
+                isHolding = false
+                isDragging = false
+                return nil
+            } else if clickType == .doubleClick, let singleMapping = findMapping(button: button, clickType: .singleClick), singleMapping.action != .none {
+                shortcutExecutor.execute(action: singleMapping.action)
+                isHolding = false
+                isDragging = false
+                return nil
+            }
+            if hasAnyMapping(for: button) {
                 isHolding = false
                 isDragging = false
                 return nil
@@ -204,6 +210,10 @@ final class MouseEventInterceptor: ObservableObject {
 
     private nonisolated func findMapping(button: MouseButton, clickType: ClickType) -> ButtonMapping? {
         _threadSafeConfiguration.buttonMappings.first { $0.button == button && $0.clickType == clickType }
+    }
+
+    private nonisolated func hasAnyMapping(for button: MouseButton) -> Bool {
+        _threadSafeConfiguration.buttonMappings.contains { $0.button == button && $0.action != .none }
     }
 
     private nonisolated func executeGestureAction(gesture: GestureDirection) {
