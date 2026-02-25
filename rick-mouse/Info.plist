@@ -4,5 +4,7 @@
 <dict>
     <key>LSUIElement</key>
     <true/>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Rick Mouse needs to send keyboard shortcuts to control system features like Switch Desktop and Navigate Back/Forward.</string>
 </dict>
 </plist>
