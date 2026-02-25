@@ -22,7 +22,7 @@ final class AccessibilityPermissionManager: ObservableObject {
     }
 
     deinit {
-        checkTimer?.invalidate()
+            checkTimer?.invalidate()
     }
     
     func checkPermission() {
