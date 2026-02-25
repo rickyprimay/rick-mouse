@@ -138,9 +138,11 @@ final class MouseEventInterceptor: ObservableObject {
            buttonNumber == Int64(gestureSettings.triggerButton.rawValue) {
             let gesture = gestureEngine.endTracking()
             if let gesture {
-                executeGestureAction(gesture: gesture)
+                DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                    self?.executeGestureAction(gesture: gesture)
+                }
+                return nil
             }
-            return nil
         }
 
         if let button = MouseButton(rawValue: Int(buttonNumber)) {
@@ -155,12 +157,18 @@ final class MouseEventInterceptor: ObservableObject {
             }
 
             if let mapping = findMapping(button: button, clickType: clickType), mapping.action != .none {
-                shortcutExecutor.execute(action: mapping.action)
+                let actionToExecute = mapping.action
+                DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                    self?.shortcutExecutor.execute(action: actionToExecute)
+                }
                 isHolding = false
                 isDragging = false
                 return nil
             } else if clickType == .doubleClick, let singleMapping = findMapping(button: button, clickType: .singleClick), singleMapping.action != .none {
-                shortcutExecutor.execute(action: singleMapping.action)
+                let actionToExecute = singleMapping.action
+                DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                    self?.shortcutExecutor.execute(action: actionToExecute)
+                }
                 isHolding = false
                 isDragging = false
                 return nil
@@ -198,9 +206,15 @@ final class MouseEventInterceptor: ObservableObject {
         if gestureSettings.gesturesEnabled, gestureEngine.isTracking {
             let deltaY = event.scrollDeltaY
             if deltaY < 0 {
-                executeDirectionAction(action: gestureSettings.scrollUpAction)
+                let action = gestureSettings.scrollUpAction
+                DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                    self?.executeDirectionAction(action: action)
+                }
             } else if deltaY > 0 {
-                executeDirectionAction(action: gestureSettings.scrollDownAction)
+                let action = gestureSettings.scrollDownAction
+                DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                    self?.executeDirectionAction(action: action)
+                }
             }
             return nil
         }
