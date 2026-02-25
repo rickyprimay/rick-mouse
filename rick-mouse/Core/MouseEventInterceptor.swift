@@ -53,7 +53,7 @@ final class MouseEventInterceptor: ObservableObject {
         guard configuration.isEnabled else { return }
 
         eventTapManager.start { [weak self] type, event in
-            guard let self else { return event }
+            guard let self else { return Unmanaged.passUnretained(event) }
             return self.processEvent(type: type, event: event)
         }
         isActive = eventTapManager.isRunning
@@ -71,7 +71,9 @@ final class MouseEventInterceptor: ObservableObject {
         start()
     }
 
-    private nonisolated func processEvent(type: CGEventType, event: CGEvent) -> CGEvent? {
+    // MARK: - Event Processing
+
+    private nonisolated func processEvent(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
         switch type {
         case .otherMouseDown:
             return handleOtherMouseDown(event: event)
@@ -86,15 +88,17 @@ final class MouseEventInterceptor: ObservableObject {
             return handleScrollWheel(event: event)
 
         default:
-            return event
+            return Unmanaged.passUnretained(event)
         }
     }
 
-    private nonisolated func handleOtherMouseDown(event: CGEvent) -> CGEvent? {
+    // MARK: - Other Mouse Down
+
+    private nonisolated func handleOtherMouseDown(event: CGEvent) -> Unmanaged<CGEvent>? {
         let buttonNumber = event.mouseButtonNumber
         let now = ProcessInfo.processInfo.systemUptime
 
-        print("[MouseEventInterceptor] MouseDown: button \(buttonNumber)")
+        print("[Interceptor] otherMouseDown button=\(buttonNumber)")
 
         if buttonNumber == lastOtherMouseDownButton,
            (now - lastOtherMouseDownTime) < AppConstants.doubleClickInterval {
@@ -110,55 +114,77 @@ final class MouseEventInterceptor: ObservableObject {
         accumulatedDragX = 0
         accumulatedDragY = 0
 
+        // Check gesture trigger
         let gestureSettings = _threadSafeConfiguration.gestureSettings
         if gestureSettings.gesturesEnabled,
            buttonNumber == Int64(gestureSettings.triggerButton.rawValue) {
             gestureEngine.beginTracking()
-            print("[MouseEventInterceptor] Gesture beginTracking")
-            return nil
+            print("[Interceptor] gesture tracking started")
+            return nil // swallow
         }
 
+        // Hold detection
         let holdItem = DispatchWorkItem { [weak self] in
             self?.isHolding = true
-            print("[MouseEventInterceptor] isHolding becomes true")
         }
         holdTimer?.cancel()
         holdTimer = holdItem
         DispatchQueue.main.asyncAfter(deadline: .now() + AppConstants.holdDetectionDelay, execute: holdItem)
 
-        if let button = MouseButton(rawValue: Int(buttonNumber)) {
-            if hasAnyMapping(for: button) {
-                print("[MouseEventInterceptor] Swallowing MouseDown for mapped button \(button)")
-                return nil
-            }
+        // If this button has any mapping, swallow the Down event
+        if let button = MouseButton(rawValue: Int(buttonNumber)),
+           hasAnyMapping(for: button) {
+            print("[Interceptor] swallowed down for mapped button \(button)")
+            return nil
         }
 
-        return event
+        return Unmanaged.passUnretained(event)
     }
 
-    private nonisolated func handleOtherMouseUp(event: CGEvent) -> CGEvent? {
+    // MARK: - Other Mouse Up
+
+    private nonisolated func handleOtherMouseUp(event: CGEvent) -> Unmanaged<CGEvent>? {
         let buttonNumber = event.mouseButtonNumber
-        print("[MouseEventInterceptor] MouseUp: button \(buttonNumber)")
+
+        print("[Interceptor] otherMouseUp button=\(buttonNumber) isDragging=\(isDragging) isHolding=\(isHolding) clickCount=\(otherMouseClickCount)")
 
         holdTimer?.cancel()
         holdTimer = nil
 
+        // Check gesture trigger
         let gestureSettings = _threadSafeConfiguration.gestureSettings
         if gestureSettings.gesturesEnabled,
            buttonNumber == Int64(gestureSettings.triggerButton.rawValue) {
             let gesture = gestureEngine.endTracking()
-            print("[MouseEventInterceptor] Gesture ended: \(String(describing: gesture))")
+            print("[Interceptor] gesture ended: \(String(describing: gesture))")
             if let gesture {
-                DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                    self?.executeGestureAction(gesture: gesture)
+                let executor = shortcutExecutor
+                let settings = _threadSafeConfiguration.gestureSettings
+                let action: MouseAction
+                switch gesture {
+                case .up: action = settings.dragUpAction
+                case .down: action = settings.dragDownAction
+                case .left: action = settings.dragLeftAction
+                case .right: action = settings.dragRightAction
+                case .none: action = .none
                 }
+                if action != .none {
+                    print("[Interceptor] executing gesture action: \(action)")
+                    DispatchQueue.global(qos: .userInteractive).async {
+                        executor.execute(action: action)
+                    }
+                }
+                isHolding = false
+                isDragging = false
                 return nil
             }
+            // No gesture detected — fall through to button mapping
         }
 
+        // Button mapping
         if let button = MouseButton(rawValue: Int(buttonNumber)) {
             var clickType: ClickType = .singleClick
-            
+
             if isDragging {
                 clickType = .clickAndDrag
             } else if isHolding {
@@ -167,29 +193,37 @@ final class MouseEventInterceptor: ObservableObject {
                 clickType = .doubleClick
             }
 
-            print("[MouseEventInterceptor] Evaluated clickType for button \(button): \(clickType)")
+            print("[Interceptor] evaluating mapping button=\(button) clickType=\(clickType)")
 
             if let mapping = findMapping(button: button, clickType: clickType), mapping.action != .none {
                 let actionToExecute = mapping.action
-                print("[MouseEventInterceptor] Executing primary mapping: \(actionToExecute) for \(clickType)")
-                DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                    self?.shortcutExecutor.execute(action: actionToExecute)
-                }
-                isHolding = false
-                isDragging = false
-                return nil
-            } else if clickType == .doubleClick, let singleMapping = findMapping(button: button, clickType: .singleClick), singleMapping.action != .none {
-                let actionToExecute = singleMapping.action
-                print("[MouseEventInterceptor] Executing fallback mapping: \(actionToExecute) for .singleClick")
-                DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                    self?.shortcutExecutor.execute(action: actionToExecute)
+                let executor = shortcutExecutor
+                print("[Interceptor] EXECUTING action: \(actionToExecute)")
+                DispatchQueue.global(qos: .userInteractive).async {
+                    executor.execute(action: actionToExecute)
                 }
                 isHolding = false
                 isDragging = false
                 return nil
             }
+
+            // Double click fallback to single click mapping
+            if clickType == .doubleClick,
+               let singleMapping = findMapping(button: button, clickType: .singleClick),
+               singleMapping.action != .none {
+                let actionToExecute = singleMapping.action
+                let executor = shortcutExecutor
+                print("[Interceptor] EXECUTING fallback single-click action: \(actionToExecute)")
+                DispatchQueue.global(qos: .userInteractive).async {
+                    executor.execute(action: actionToExecute)
+                }
+                isHolding = false
+                isDragging = false
+                return nil
+            }
+
+            // We swallowed the down event, so swallow the up too
             if hasAnyMapping(for: button) {
-                print("[MouseEventInterceptor] Swallowing MouseUp for mapped button \(button) because no specific clickType mapping was found")
                 isHolding = false
                 isDragging = false
                 return nil
@@ -198,80 +232,77 @@ final class MouseEventInterceptor: ObservableObject {
 
         isHolding = false
         isDragging = false
-        print("[MouseEventInterceptor] Passing event through")
-        return event
+        return Unmanaged.passUnretained(event)
     }
 
-    private nonisolated func handleOtherMouseDragged(event: CGEvent) -> CGEvent? {
+    // MARK: - Other Mouse Dragged
+
+    private nonisolated func handleOtherMouseDragged(event: CGEvent) -> Unmanaged<CGEvent>? {
         let buttonNumber = event.mouseButtonNumber
-        
-        accumulatedDragX += event.mouseDeltaX
-        accumulatedDragY += event.mouseDeltaY
-        
-        let dragThreshold: Int64 = 5
-        if abs(accumulatedDragX) > dragThreshold || abs(accumulatedDragY) > dragThreshold {
-            isDragging = true
-        }
-        
-        // print("[MouseEventInterceptor] MouseDragged: button \(buttonNumber), isDragging = \(isDragging)")
 
         let gestureSettings = _threadSafeConfiguration.gestureSettings
         if gestureSettings.gesturesEnabled,
            buttonNumber == Int64(gestureSettings.triggerButton.rawValue) {
-            let deltaX = event.mouseDeltaX
-            let deltaY = event.mouseDeltaY
-            gestureEngine.trackMovement(deltaX: Double(deltaX), deltaY: Double(deltaY))
+            // Only feed gesture engine, do NOT set isDragging
+            gestureEngine.trackMovement(deltaX: Double(event.mouseDeltaX), deltaY: Double(event.mouseDeltaY))
             return nil
         }
 
-        return event
+        // Only accumulate drag for non-gesture buttons
+        accumulatedDragX += event.mouseDeltaX
+        accumulatedDragY += event.mouseDeltaY
+
+        let dragThreshold: Int64 = 5
+        if abs(accumulatedDragX) > dragThreshold || abs(accumulatedDragY) > dragThreshold {
+            isDragging = true
+        }
+
+        return Unmanaged.passUnretained(event)
     }
 
-    private nonisolated func handleScrollWheel(event: CGEvent) -> CGEvent? {
+    // MARK: - Scroll Wheel
+
+    private nonisolated func handleScrollWheel(event: CGEvent) -> Unmanaged<CGEvent>? {
         let gestureSettings = _threadSafeConfiguration.gestureSettings
         if gestureSettings.gesturesEnabled, gestureEngine.isTracking {
             let deltaY = event.scrollDeltaY
+            let executor = shortcutExecutor
             if deltaY < 0 {
                 let action = gestureSettings.scrollUpAction
-                DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                    self?.executeDirectionAction(action: action)
+                if action != .none {
+                    DispatchQueue.global(qos: .userInteractive).async {
+                        executor.execute(action: action)
+                    }
                 }
             } else if deltaY > 0 {
                 let action = gestureSettings.scrollDownAction
-                DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                    self?.executeDirectionAction(action: action)
+                if action != .none {
+                    DispatchQueue.global(qos: .userInteractive).async {
+                        executor.execute(action: action)
+                    }
                 }
             }
             return nil
         }
 
-        return scrollEngine.processScrollEvent(event: event, settings: _threadSafeConfiguration.scrollSettings)
+        // For scroll processing, modify the event in-place instead of creating new events
+        let scrollSettings = _threadSafeConfiguration.scrollSettings
+        scrollEngine.applyScrollSettings(event: event, settings: scrollSettings)
+        return Unmanaged.passUnretained(event)
     }
 
+    // MARK: - Helpers
+
     private nonisolated func findMapping(button: MouseButton, clickType: ClickType) -> ButtonMapping? {
-        _threadSafeConfiguration.buttonMappings.first { $0.button == button && $0.clickType == clickType }
+        let mappings = _threadSafeConfiguration.buttonMappings
+        print("[Interceptor] searching \(mappings.count) mappings for button=\(button) clickType=\(clickType)")
+        for m in mappings {
+            print("[Interceptor]   mapping: button=\(m.button) clickType=\(m.clickType) action=\(m.action)")
+        }
+        return mappings.first { $0.button == button && $0.clickType == clickType }
     }
 
     private nonisolated func hasAnyMapping(for button: MouseButton) -> Bool {
         _threadSafeConfiguration.buttonMappings.contains { $0.button == button && $0.action != .none }
-    }
-
-    private nonisolated func executeGestureAction(gesture: GestureDirection) {
-        let settings = _threadSafeConfiguration.gestureSettings
-        let action: MouseAction
-
-        switch gesture {
-        case .up: action = settings.dragUpAction
-        case .down: action = settings.dragDownAction
-        case .left: action = settings.dragLeftAction
-        case .right: action = settings.dragRightAction
-        case .none: return
-        }
-
-        shortcutExecutor.execute(action: action)
-    }
-
-    private nonisolated func executeDirectionAction(action: MouseAction) {
-        shortcutExecutor.execute(action: action)
     }
 }
