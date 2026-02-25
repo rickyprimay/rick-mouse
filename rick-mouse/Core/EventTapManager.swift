@@ -144,7 +144,15 @@ private func eventTapCallbackFunction(
     }
 
     if let modifiedEvent = manager.handleEvent(type: type, event: event) {
-        return Unmanaged.passUnretained(modifiedEvent)
+        let originalPtr = Unmanaged.passUnretained(event).toOpaque()
+        let modifiedPtr = Unmanaged.passUnretained(modifiedEvent).toOpaque()
+
+        if originalPtr == modifiedPtr {
+            return Unmanaged.passUnretained(modifiedEvent)
+        } else {
+            // New event created by Swift, must pass ownership to macOS system
+            return Unmanaged.passRetained(modifiedEvent)
+        }
     }
 
     return nil
